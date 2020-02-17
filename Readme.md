@@ -23,5 +23,5 @@ M5Stack + M5STACK-GPS-02(NEO-M8N)
 After you changed GPS moudle baud to 115200bps, you have to select 115200bps at opening display to connect PC.
 
 # Notes
-If you don't want to Configure Module, Please change "hSerial.begin(115200);" to "hSerial.begin(9600);".  
+If you don't want to configure GPS module, please change "hSerial.begin(115200);" to "hSerial.begin(9600);".  
 Update interval is fixed to 1Hz.
