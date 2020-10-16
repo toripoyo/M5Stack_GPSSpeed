@@ -1,12 +1,13 @@
 GPS Speed Meter for Car
 
-# Hardware
-M5Stack + M5STACK-GPS-02(NEO-M8N)  
 * Display GPS speed, altitude, heading  
 * Automatic dimmer while 18:00 - 6:00 JST  
 * Automatic sleep when USB power is not connected
 
 ![](image/Sample.jpg)
+
+# Hardware
+M5Stack + M5STACK-GPS-02(NEO-M8N)  
 
 # How to use
 
