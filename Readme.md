@@ -2,7 +2,7 @@ GPS Speed Meter for Car
 
 * Display GPS speed, altitude, heading  
 * Automatic dimmer while 18:00 - 6:00 JST  
-* Automatic sleep when USB power is not connected
+// * Automatic sleep when USB power is not connected
 
 ![](image/Sample.jpg)
 
