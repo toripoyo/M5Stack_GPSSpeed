@@ -3,7 +3,6 @@
 
 TinyGPSPlus tGPS;
 HardwareSerial hSerial(2);
-bool enableAutoSleep = true;
 
 void serialThroughMode();
 void updateScreen(TinyGPSPlus);
@@ -15,7 +14,6 @@ void setup()
   M5.Lcd.setTextSize(2);
   M5.Lcd.drawString("Select Baud To Connect PC", 0, 90);
   M5.Lcd.drawString("9600", 30, 200);
-  M5.Lcd.drawString("Battery", 110, 200);
   M5.Lcd.drawString("115200", 220, 200);
   M5.Lcd.setTextFont(4);
   Serial.begin(115200);
@@ -39,10 +37,6 @@ void setup()
     hSerial.begin(9600);
     serialThroughMode();
   }
-  if (M5.BtnB.isPressed())
-  {
-    enableAutoSleep = false;
-  }
   if (M5.BtnC.isPressed())
   {
     hSerial.begin(115200);
@@ -58,15 +52,6 @@ void setup()
 
 void loop()
 {
-  // Manage Power
-  if (enableAutoSleep)
-  {
-    while (!M5.Power.isCharging())
-    {
-      M5.Power.lightSleep(SLEEP_SEC(3));
-    }
-  }
-
   // Receive GPS Data
   while (hSerial.available() > 0)
   {
@@ -121,13 +106,14 @@ void updateScreen(TinyGPSPlus *gps)
   }
   else
   {
-    M5.Lcd.setTextSize(3);
+    M5.Lcd.setTextSize(2);
     M5.Lcd.fillRect(10, 60, 300, 150, TFT_BLACK);
-    M5.Lcd.drawString("------", 10, 60, 7);
+    M5.Lcd.drawString("-----", 5, 60, 7);
     delay(1000);
   }
   M5.Lcd.setTextSize(1);
   M5.Lcd.drawString("km/h", 260, 210);
+  //M5.Lcd.drawString(String(nowSats), 280, 0);
 
   oldAlt = nowAlt;
   oldSpeed = nowSpeed;
