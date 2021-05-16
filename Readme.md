@@ -2,7 +2,6 @@ GPS Speed Meter for Car
 
 * Display GPS speed, altitude, heading  
 * Automatic dimmer while 18:00 - 6:00 JST  
-// * Automatic sleep when USB power is not connected
 
 ![](image/Sample.jpg)
 
@@ -15,7 +14,6 @@ M5Stack + M5STACK-GPS-02(NEO-M8N)
 1. Download U-Center(https://www.u-blox.com/en/product/u-center)
 2. Connect M5Stack to PC
 3. Select 9600bps while opening (push & hold the left button)  
-![](image/Opening.jpg)
 4. Configure GPS Module  
     *  Change Baud to 115200bps
     *  Select update interval (1Hz, 5Hz, 10Hz)

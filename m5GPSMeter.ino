@@ -4,7 +4,7 @@
 #include "image.c"
 
 TinyGPSPlus tGPS;
-HardwareSerial hSerial(2);
+HardwareSerial hSerial(2);  // NEO-M8N
 static uint32_t g_connect_baud = 0;
 
 void serialThroughMode();
@@ -45,9 +45,9 @@ void setup()
     M5.Lcd.pushImage(0,0,320,240,image_data_Image);
   }
   delay(1000);
-  
   for(int i=200;i>0;i-=5){M5.Lcd.setBrightness(i);delay(10);}
   
+  // Mode Select
   g_TFTBuf.setTextFont(4);
   g_TFTBuf.setTextSize(1);
   g_TFTBuf.fillSprite(TFT_BLACK);
@@ -56,11 +56,9 @@ void setup()
   g_TFTBuf.drawString("9600", 30, 200);
   g_TFTBuf.drawString("115200", 220, 200);
   g_TFTBuf.pushSprite(0, 0);
-
   for(int i=0;i<200;i+=5){M5.Lcd.setBrightness(i);delay(10);}
   delay(2000);
 
-  // Serial Through Mode (To Setup Module)
   M5.update();
   if (M5.BtnA.isPressed())
   {
@@ -98,9 +96,7 @@ void loop()
   if (isNight)
   {
     M5.Lcd.setBrightness(60);
-  }
-  else
-  {
+  }else{
     M5.Lcd.setBrightness(200);
   }
 
