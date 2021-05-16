@@ -1,22 +1,30 @@
 #include <M5Stack.h>
 #include <TinyGPS++.h>
 
+#include "image.c"
+
 TinyGPSPlus tGPS;
 HardwareSerial hSerial(2);
+static uint32_t g_connect_baud = 0;
 
 void serialThroughMode();
 void updateScreen(TinyGPSPlus);
 void updateDirection(int);
 
+// Display Double Buffer
+TFT_eSprite g_TFTBuf = TFT_eSprite(&M5.Lcd);
+
 void setup()
 {
   M5.begin();
-  M5.Lcd.setTextSize(2);
-  M5.Lcd.drawString("Select Baud To Connect PC", 0, 90);
-  M5.Lcd.drawString("9600", 30, 200);
-  M5.Lcd.drawString("115200", 220, 200);
-  M5.Lcd.setTextFont(4);
-  Serial.begin(115200);
+
+  // display init
+  g_TFTBuf.setColorDepth(8);
+  g_TFTBuf.createSprite(320, 240);
+  g_TFTBuf.setTextFont(4);
+  g_TFTBuf.setTextSize(2);
+  g_TFTBuf.setTextColor(TFT_WHITE);
+
   pinMode(BUTTON_A_PIN, INPUT_PULLUP);
   pinMode(BUTTON_B_PIN, INPUT_PULLUP);
   pinMode(BUTTON_C_PIN, INPUT_PULLUP);
@@ -30,24 +38,51 @@ void setup()
   M5.Power.setPowerVin(false);
   delay(2000);
 
+  // Opening
+  for(int i=0;i<200;i+=3)
+  {
+    M5.Lcd.setBrightness(i);
+    M5.Lcd.pushImage(0,0,320,240,image_data_Image);
+  }
+  delay(1000);
+  
+  for(int i=200;i>0;i-=5){M5.Lcd.setBrightness(i);delay(10);}
+  
+  g_TFTBuf.setTextFont(4);
+  g_TFTBuf.setTextSize(1);
+  g_TFTBuf.fillSprite(TFT_BLACK);
+  g_TFTBuf.drawString("> Select NEO-M8N baud to", 0, 30);
+  g_TFTBuf.drawString("    enter serial through mode", 0, 60);
+  g_TFTBuf.drawString("9600", 30, 200);
+  g_TFTBuf.drawString("115200", 220, 200);
+  g_TFTBuf.pushSprite(0, 0);
+
+  for(int i=0;i<200;i+=5){M5.Lcd.setBrightness(i);delay(10);}
+  delay(2000);
+
   // Serial Through Mode (To Setup Module)
   M5.update();
   if (M5.BtnA.isPressed())
   {
     hSerial.begin(9600);
+    g_connect_baud = 9600;
     serialThroughMode();
   }
   if (M5.BtnC.isPressed())
   {
     hSerial.begin(115200);
+    g_connect_baud = 115200;
     serialThroughMode();
   }
 
   // You need configure Baud of the GPS module before use
+  //hSerial.begin(9600);    // use GPS moudle in default settings
   hSerial.begin(115200);
-  delay(1000);
-  M5.Lcd.fillScreen(TFT_BLACK);
-  //M5.Lcd.setRotation(5);
+  
+  for(int i=200;i>0;i-=5){M5.Lcd.setBrightness(i);delay(10);}
+  g_TFTBuf.fillSprite(TFT_BLACK);
+  g_TFTBuf.pushSprite(0, 0);
+  for(int i=200;i>0;i-=5){M5.Lcd.setBrightness(i);delay(10);}
 }
 
 void loop()
@@ -71,12 +106,10 @@ void loop()
 
   // Draw Information
   updateScreen(&tGPS);
+  delay(500);
 }
 
 // Update Screen Info
-unsigned int oldAlt = 0;
-unsigned int oldSpeed = 0;
-unsigned int oldHeading = 0;
 void updateScreen(TinyGPSPlus *gps)
 {
   int nowAlt = (int)(gps->altitude.meters());
@@ -84,40 +117,28 @@ void updateScreen(TinyGPSPlus *gps)
   int nowSpeed = (int)(gps->speed.kmph() - 0.5);
   int nowHeading = (int)(gps->course.deg());
 
-  M5.Lcd.setTextColor(TFT_WHITE);
+  g_TFTBuf.fillSprite(TFT_BLACK);
+  g_TFTBuf.setTextColor(TFT_WHITE);
+
   if (nowSats >= 3)
   {
-    if (nowAlt != oldAlt)
-    {
-      M5.Lcd.setTextSize(2);
-      M5.Lcd.fillRect(0, 0, 230, 47, TFT_BLACK);
-      M5.Lcd.drawString(String(nowAlt) + "m    ", 0, 0);
-    }
-    if (nowSpeed != oldSpeed)
-    {
-      M5.Lcd.setTextSize(3);
-      M5.Lcd.fillRect(15, 60, 300, 150, TFT_BLACK);
-      M5.Lcd.drawString(String(nowSpeed), 15, 60, 7);
-    }
-    if (nowHeading != oldHeading)
-    {
+      g_TFTBuf.setTextSize(2);
+      g_TFTBuf.drawString(String(nowAlt) + "m    ", 0, 0);
+      g_TFTBuf.setTextSize(2);
+      g_TFTBuf.drawString(String(nowSpeed), 15, 50, 8);
       updateDirection(nowHeading);
-    }
   }
   else
   {
-    M5.Lcd.setTextSize(2);
-    M5.Lcd.fillRect(10, 60, 300, 150, TFT_BLACK);
-    M5.Lcd.drawString("-----", 5, 60, 7);
-    delay(1000);
+    g_TFTBuf.setTextSize(2);
+    g_TFTBuf.drawString("-----", 15, 50, 8);
   }
-  M5.Lcd.setTextSize(1);
-  M5.Lcd.drawString("km/h", 260, 210);
-  //M5.Lcd.drawString(String(nowSats), 280, 0);
-
-  oldAlt = nowAlt;
-  oldSpeed = nowSpeed;
-  oldHeading = nowHeading;
+  g_TFTBuf.setTextSize(1);
+  g_TFTBuf.setTextColor(TFT_WHITE);
+  g_TFTBuf.drawString("km/h", 250, 210);
+  g_TFTBuf.setTextColor(TFT_LIGHTGREY);
+  g_TFTBuf.drawString("sats: " + String(nowSats), 0, 210);
+  g_TFTBuf.pushSprite(0, 0);
 }
 
 // Update Direction Info
@@ -172,24 +193,41 @@ void updateDirection(int nowCourse)
     strColor = TFT_PURPLE;
   }
 
-  M5.Lcd.setTextSize(2);
-  M5.Lcd.setTextColor(strColor);
-  M5.Lcd.fillRect(230, 0, 90, 47, TFT_BLACK);
-  M5.Lcd.drawString(dispStr, 240, 0);
+  g_TFTBuf.setTextSize(2);
+  g_TFTBuf.setTextColor(strColor);
+  g_TFTBuf.drawString(dispStr, 240, 0);
 }
 
 // -----------------------------------------------------------
 // Serial Through Mode to Configure GPS Module from PC
 void serialThroughMode()
-{
-  M5.Lcd.drawString("Serial Through Mode", 0, 120);
+{ 
+
+  g_TFTBuf.fillSprite(TFT_BLACK);
+  g_TFTBuf.setTextColor(TFT_RED);
+  g_TFTBuf.drawString("Serial Through Mode", 0, 0);
+  g_TFTBuf.setTextColor(TFT_WHITE);
+  
+  g_TFTBuf.drawString("NEO-M8N (GPS Module):", 0, 60);
+  g_TFTBuf.drawString(String(g_connect_baud), 140, 90);
+  g_TFTBuf.drawString("(bps)", 240, 90);
+  
+  g_TFTBuf.drawString("USB Serial (PC):", 0, 150);
+  g_TFTBuf.drawString("(bps)", 240, 180);
+  g_TFTBuf.drawString("115200", 140, 180);
+  
+  g_TFTBuf.pushSprite(0, 0);
+ 
   while (1)
   {
+    // GPS module to PC
     while (hSerial.available() > 0)
     {
       Serial.write(hSerial.read());
     }
-    while (Serial.available() > 0)
+   
+    // PC to GPS module
+    while (Serial.available() > 0) 
     {
       hSerial.write(Serial.read());
     }
