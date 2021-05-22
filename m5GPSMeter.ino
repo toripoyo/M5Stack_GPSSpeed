@@ -35,7 +35,7 @@ void setup()
   digitalWrite(25, LOW);
 
   M5.Power.begin();
-  M5.Power.setPowerVin(false);
+  M5.Power.setPowerVin(true);
   delay(2000);
 
   // Opening
@@ -121,7 +121,7 @@ void updateScreen(TinyGPSPlus *gps)
       g_TFTBuf.setTextSize(2);
       g_TFTBuf.drawString(String(nowAlt) + "m    ", 0, 0);
       g_TFTBuf.setTextSize(2);
-      g_TFTBuf.drawString(String(nowSpeed), 15, 50, 8);
+      g_TFTBuf.drawString(String(nowSpeed), 0, 50, 8);
       updateDirection(nowHeading);
   }
   else
