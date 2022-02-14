@@ -188,6 +188,7 @@ void updateBrightness(void) {
     // Change Night Mode to Adjust Brightness
     temp = tGPS.time.hour() + 9 >= 18 || tGPS.time.hour() + 9 <= 6;
     if (isNight != temp) {
+        isNight = temp;
         if (isNight) {
             M5.Lcd.setBrightness(60);
         } else {
