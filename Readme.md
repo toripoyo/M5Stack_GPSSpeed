@@ -1,4 +1,5 @@
 GPS Speed Meter for Car  
+M5Stack-Core and Core2 both avairable
 
 * Display GPS speed, altitude, heading  
 * Automatic dimmer while 18:00 - 6:00 JST
