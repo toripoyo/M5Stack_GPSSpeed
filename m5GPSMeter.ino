@@ -1,3 +1,5 @@
+#define CORE2  // define if use CORE2
+
 #include <M5Unified.h> // Core & Core2
 #include <M5GFX.h>
 #include <TinyGPS++.h>
@@ -7,6 +9,10 @@
 // Global variable
 TinyGPSPlus tGPS;                             // TinyGPS++ object
 HardwareSerial hSerial(2);                    // NEO-M8N serial
+String g_gps_log_data = "";                          // SD write buffer(fixed size reserved)
+bool g_gps_log_data_semaphore = true;                // SD write buffer semaphore
+bool is_sd_detected = false;                         // SD Card available
+static const uint32_t kWriteBufferThreshold = 2500;  // SD write buffer threshold
 static const uint32_t kTimeOffsetHour = 9;    // UTC to JST offset
 LGFX_Sprite g_TFTBuf = LGFX_Sprite(&M5.Lcd);  // Display Buffer
 
@@ -15,7 +21,8 @@ LGFX_Sprite g_TFTBuf = LGFX_Sprite(&M5.Lcd);  // Display Buffer
 #define GPSTASK_PRIORITY 15  // High
 #define LCDTASK_INTERVAL 100
 #define LCDTASK_PRIORITY 10
-
+#define SDTASK_INTERVAL  2000
+#define SDTASK_PRIORITY  5  // Low
 #define BACKLIGHT_UP(x)              \
   for (int i = 0; i < 200; i += 5) { \
     M5.Lcd.setBrightness(i);         \
@@ -32,6 +39,10 @@ static bool g_isWritingSD = false;
 
 void setup() {
   M5.begin();
+#ifdef CORE2
+  M5.Axp.SetLed(0);
+#endif
+  g_gps_log_data.reserve(kWriteBufferThreshold * 2);
 
   // Display init
   g_TFTBuf.setColorDepth(8);
@@ -41,14 +52,14 @@ void setup() {
   g_TFTBuf.setTextColor(TFT_WHITE);
 
   // Speaker Noise Reduce for Core1
-  /*
+#ifndef CORE2
   M5.Speaker.mute();
   pinMode(25, OUTPUT);
   digitalWrite(25, LOW);
 
   M5.Power.begin();
   M5.Power.setPowerVin(true);
-  */
+#endif
 
   // Opening Display
   M5.Lcd.pushImage(0, 0, 320, 240, image_data_Image);
@@ -92,9 +103,10 @@ void setup() {
   xTaskCreatePinnedToCore(GPSUpdateTask, "GPSUpdateTask", 8192, NULL, GPSTASK_PRIORITY, NULL, 1);
   // Start Display task
   xTaskCreatePinnedToCore(LCDUpdateTask, "LCDUpdateTask", 8192, NULL, LCDTASK_PRIORITY, NULL, 1);
-  
-  // only for CORE2
+// Start SD Card write task(avairable on core2 only)
+#ifdef CORE2
   xTaskCreatePinnedToCore(SDWriteTask, "SDWriteTask", 8192, NULL, SDTASK_PRIORITY, NULL, 1);
+#endif
 }
 
 // [Task Pri=1] main
@@ -108,10 +120,13 @@ void GPSUpdateTask(void* args) {
 
   while (1) {
     // Receive GPS Data and update TGPS object
-    while (hSerial.available() > 0) {
+    while (hSerial.available() > 0 && g_gps_log_data_semaphore) {
       temp_chr = hSerial.read();
       tGPS.encode(temp_chr);
       // Serial.write(temp_chr);
+      if (is_sd_detected) {
+        g_gps_log_data += String(temp_chr);
+      }
     }
     delay(GPSTASK_INTERVAL);
   }
@@ -151,8 +166,58 @@ void LCDUpdateTask(void* args) {
     // g_TFTBuf.fillCircle(315, 235, 3, GREEN);
     // g_TFTBuf.fillCircle(315, 235, 3, g_gps_log_data_semaphore ? BLACK : RED);
 
+#ifdef CORE2
+    digitalWrite(4, 1);  // SD CS inactive
+#endif
     g_TFTBuf.pushSprite(0, 0);
+#ifdef CORE2
+    digitalWrite(4, 0);  // SD CS active
+#endif
     delay(LCDTASK_INTERVAL);
+  }
+}
+
+// [Task Pri=5] Update SD Card Data
+// Omitted time conversion UTC to JST
+String createFileName(TinyGPSPlus& gps) {
+  char buf[30] = {};
+  int hour = (gps.time.hour() + kTimeOffsetHour >= 24) ? gps.time.hour() + kTimeOffsetHour - 24 : gps.time.hour() + kTimeOffsetHour;
+  int day = (gps.time.hour() + kTimeOffsetHour >= 24) ? gps.date.day() + 1 : gps.date.day();
+
+  snprintf(buf, sizeof(buf), "/%4d%2d%2d_%2d%2d%2d.nmea", gps.date.year(), gps.date.month(), day, hour, gps.time.minute(), gps.time.second());
+  return String(buf);
+}
+void SDWriteTask(void* args) {
+  static File sd_f;
+  static String fname;
+
+  while (1) {
+    if (tGPS.satellites.value() > 3) {
+      if (!sd_f) {
+        is_sd_detected = false;
+
+        fname = createFileName(tGPS);
+        sd_f = SD.open("/" + fname, FILE_APPEND);
+      }
+      if (sd_f) {
+        is_sd_detected = true;
+
+        if (g_gps_log_data.length() > kWriteBufferThreshold) {
+          g_gps_log_data_semaphore = false;  // Stop write new data to this string
+#ifdef CORE2
+          M5.Axp.SetLed(1);
+#endif
+          sd_f.print(g_gps_log_data);
+          sd_f.flush();
+          g_gps_log_data.clear();
+#ifdef CORE2
+          M5.Axp.SetLed(0);
+#endif
+          g_gps_log_data_semaphore = true;  // Allow write new data to this string
+        }
+      }
+    }
+    delay(SDTASK_INTERVAL);
   }
 }
 
@@ -231,12 +296,24 @@ void serialThroughMode(uint32_t baud) {
   while (1) {
     // GPS module to PC
     while (hSerial.available() > 0) {
+#ifdef CORE2
+      M5.Axp.SetLed(1);
+#endif
       Serial.write(hSerial.read());
+#ifdef CORE2
+      M5.Axp.SetLed(0);
+#endif
     }
 
     // PC to GPS module
     while (Serial.available() > 0) {
+#ifdef CORE2
+      M5.Axp.SetLed(1);
+#endif
       hSerial.write(Serial.read());
+#ifdef CORE2
+      M5.Axp.SetLed(0);
+#endif
     }
   }
 }
