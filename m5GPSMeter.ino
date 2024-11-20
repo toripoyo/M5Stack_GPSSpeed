@@ -1,4 +1,4 @@
-#define CORE2  // define if use CORE2
+//#define CORE2  // define if use CORE2
 
 #include <M5Unified.h> // Core & Core2
 #include <M5GFX.h>
@@ -53,12 +53,11 @@ void setup() {
 
   // Speaker Noise Reduce for Core1
 #ifndef CORE2
-  M5.Speaker.mute();
+  //M5.Speaker.mute();
   pinMode(25, OUTPUT);
   digitalWrite(25, LOW);
 
   M5.Power.begin();
-  M5.Power.setPowerVin(true);
 #endif
 
   // Opening Display
@@ -177,6 +176,7 @@ void LCDUpdateTask(void* args) {
   }
 }
 
+#ifdef CORE2
 // [Task Pri=5] Update SD Card Data
 // Omitted time conversion UTC to JST
 String createFileName(TinyGPSPlus& gps) {
@@ -220,6 +220,7 @@ void SDWriteTask(void* args) {
     delay(SDTASK_INTERVAL);
   }
 }
+#endif
 
 // Adjust LCD Brightness [on LCDUpdateTask]
 // Dim 18pm to 6am
