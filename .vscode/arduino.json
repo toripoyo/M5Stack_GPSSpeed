@@ -1,0 +1,6 @@
+{
+    "port": "COM4",
+    "board": "m5stack:esp32:m5stack-core-esp32",
+    "configuration": "FlashMode=qio,FlashFreq=80,PartitionScheme=default,UploadSpeed=921600,DebugLevel=none",
+    "sketch": "m5GPSMeter.ino"
+}
