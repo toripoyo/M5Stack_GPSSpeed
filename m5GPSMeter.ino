@@ -161,7 +161,11 @@ void serialThrough(uint32_t baudGps) {
 //================================================================
 void setup() {
   auto cfg = M5.config();   // Default config is fine for Core & Core2
+  cfg.output_power = true;   // enable AXP192 / IP5306 control
+  cfg.internal_spk = true;
   M5.begin(cfg);
+  M5.Speaker.begin();
+  M5.Speaker.stop();
 
   DISP.pushImage(0, 0, 320, 240, image_data_Image);
   fadeBrightness(0, 200);
