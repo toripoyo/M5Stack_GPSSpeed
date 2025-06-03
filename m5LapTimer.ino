@@ -1,231 +1,216 @@
 // -----------------------------------------------------------------------------
-//  Lap Timer (M5Stack Core / Core Gray) – Flicker‑free version (M5Canvas buffer)
-//  * Dependencies: M5Unified, TinyGPS++, SD
-//  * Uses a single off‑screen M5Canvas (g_buf) for tear‑free UI updates.
-//  * No <M5GFX.h> dependency.
+//  Lap Timer PRO (M5Stack Core / Gray) – UI polished with reference layout
+//  * init updated: 8‑bit off‑screen buffer @ 320×240 (requested)
 // -----------------------------------------------------------------------------
 #include <M5Unified.h>
 #include <TinyGPS++.h>
+#include <SPI.h>    // ★ 追加
 #include <SD.h>
 
-/* === 設定値 =============================================================== */
-namespace cfg {
-constexpr uint32_t  baudPc      = 115200;          // PC serial speed
-constexpr uint32_t  baudGps     = 115200;          // GPS module serial speed
-constexpr float     originLat   = 35.3698692322f;  // start/finish latitude
-constexpr float     originLon   = 138.9336547852f; // start/finish longitude
-constexpr float     radiusM     = 15.0f;           // start circle radius [m]
-constexpr char      csvPath[]   = "/lap_log.csv";  // CSV file path
-constexpr uint8_t   lcdTextSize = 2;               // text size on LCD
-constexpr uint32_t  flushMs     = 5000;            // SD flush period [ms]
-constexpr bool      enableSdLog = true;            // enable SD logging
-} // namespace cfg
+namespace cfg
+{
+constexpr uint32_t BAUD_PC = 115200;
+constexpr uint32_t BAUD_GPS = 115200;
+constexpr float LAT0 = 35.3698692322f;
+constexpr float LON0 = 138.9336547852f;
+constexpr float RAD_DEF_M = 15.0f;
+constexpr char CSV[] = "/lap_log.csv";
+constexpr uint8_t TXT = 2;
+constexpr uint32_t FLUSH_MS = 5000;
+constexpr bool ENABLE_SD = true;
+}  // namespace cfg
 
-/* === Data structures ====================================================== */
 struct Snapshot {
-    //float    lat   = NAN;
-    //float    lon   = NAN;
-    //float    alt   = NAN;
-    //float    vKmh  = NAN;
-    //uint8_t  sats  = 0;
-    //uint32_t epochMs = 0;
-    float    lat   = 5;
-    float    lon   = 6;
-    float    alt   = 259;
-    float    vKmh  = 192;
-    uint8_t  sats  = 5;
-    uint32_t epochMs = 98245;
+  float lat = NAN, lon = NAN, alt = NAN, vKmh = NAN, distM = NAN;
+  uint8_t sats = 0;
+  uint16_t yr = 0;
+  uint8_t mon = 0, day = 0, hr = 0, min = 0, sec = 0;
+  uint32_t epochMs = 0;
 };
 
-struct LapStat {
-    uint32_t index   = 0;
-    float    seconds = NAN;
+struct LapInfo {
+  float sec = NAN;
+  float topSpeed = NAN;
 };
 
-/* === GPS reader =========================================================== */
 class GpsReader {
-public:
-    void begin(HardwareSerial& s) { serial_ = &s; }
-    bool update(Snapshot& out) {
-        while (serial_->available()) gps_.encode(serial_->read());
-        out.lat   = gps_.location.lat();
-        out.lon   = gps_.location.lng();
-        out.alt   = gps_.altitude.meters();
-        out.vKmh  = gps_.speed.kmph();
-        out.sats  = gps_.satellites.value();
-        out.epochMs = millis();
-        return true;
-    }
-private:
-    HardwareSerial* serial_{};
-    TinyGPSPlus gps_;
+ public:
+  void begin(HardwareSerial& s) { ser_ = &s; }
+  bool update(Snapshot& o) {
+    while (ser_->available()) gps_.encode(ser_->read());
+    o.lat = gps_.location.lat();
+    o.lon = gps_.location.lng();
+    o.alt = gps_.altitude.meters();
+    o.vKmh = gps_.speed.kmph();
+    o.sats = gps_.satellites.value();
+    o.yr = gps_.date.year();
+    o.mon = gps_.date.month();
+    o.day = gps_.date.day();
+    o.hr = (gps_.time.hour() + 9) % 24;
+    o.min = gps_.time.minute();
+    o.sec = gps_.time.second();
+    o.distM = gps_.distanceBetween(o.lat, o.lon, lat0_, lon0_);
+    o.epochMs = millis();
+    return true;
+  }
+  void setOrigin(float la, float lo) {
+    lat0_ = la;
+    lon0_ = lo;
+  }
+
+ private:
+  HardwareSerial* ser_{};
+  TinyGPSPlus gps_;
+  float lat0_ = cfg::LAT0, lon0_ = cfg::LON0;
 };
 
-/* === Lap detector (outside→inside→outside, mid‑point) ===================== */
-class LapDetector {
-public:
-    LapDetector(float lat0, float lon0, float r)
-        : lat0_(lat0), lon0_(lon0), r_(r) {}
+class LapEngine {
+ public:
+  void setRadius(float r) { rad_ = r; }
+  float radius() const { return rad_; }
+  bool update(const Snapshot& s, LapInfo& o) {
+    if (std::isnan(s.distM)) return false;
+    if (!inside_ && s.distM <= rad_) {
+      inside_ = true;
+      entry_ = s.epochMs;
+      top_ = 0;
+    } else if (inside_ && s.distM > rad_) {
+      inside_ = false;
+      uint32_t mid = entry_ + (s.epochMs - entry_) / 2;
+      o.sec = (laps_ == 0 ? NAN : (mid - prev_) / 1000.0f);
+      prev_ = mid;
+      ++laps_;
+      o.topSpeed = top_;
+      for (int i = 4; i > 0; --i) hist_[i] = hist_[i - 1];
+      hist_[0] = o;
+      if (laps_ == 1) hist_[0].sec = NAN;
+      if (laps_ > 1 && (std::isnan(best_) || o.sec < best_)) best_ = o.sec;
+      avg_ = 0;
+      int n = 0;
+      for (int i = 0; i < 5 && !std::isnan(hist_[i].sec); ++i) {
+        avg_ += hist_[i].sec;
+        ++n;
+      }
+      if (n) avg_ /= n;
+      return true;
+    }
+    if (inside_ && s.vKmh > top_) top_ = s.vKmh;
+    return false;
+  }
+  uint32_t lapCount() const { return laps_; }
+  const LapInfo& last(int i) const { return hist_[i]; }
+  float best() const { return best_; }
+  float avg() const { return avg_; }
 
-    bool onSnapshot(const Snapshot& s, LapStat& out) {
-        const float dist = distanceM(s.lat, s.lon, lat0_, lon0_);
-        if (!inside_ && dist <= r_) {
-            inside_ = true;
-            entryMs_ = s.epochMs;
-        } else if (inside_ && dist > r_) {
-            inside_ = false;
-            const uint32_t exitMs   = s.epochMs;
-            const uint32_t centerMs = entryMs_ + (exitMs - entryMs_) / 2;
-            out.index   = lapCnt_;
-            out.seconds = (lapCnt_ == 0) ? NAN :
-                          (centerMs - prevCenterMs_) / 1000.0f;
-            prevCenterMs_ = centerMs;
-            ++lapCnt_;
-            if (lapCnt_ > 1 && (out.seconds < best_ || std::isnan(best_))) {
-                best_ = out.seconds;
-            }
-            return true;
-        }
-        return false;
-    }
-    float bestSec() const { return best_; }
-private:
-    static float distanceM(float la1,float lo1,float la2,float lo2) {
-        constexpr float R = 6371000.0f;
-        float dLat = radians(la2 - la1);
-        float dLon = radians(lo2 - lo1);
-        float a = sinf(dLat/2)*sinf(dLat/2) +
-                  cosf(radians(la1))*cosf(radians(la2))*sinf(dLon/2)*sinf(dLon/2);
-        return R * 2 * atan2f(sqrtf(a), sqrtf(1 - a));
-    }
-    float     lat0_, lon0_, r_;
-    bool      inside_ = false;
-    uint32_t  entryMs_ = 0;
-    uint32_t  prevCenterMs_ = 0;
-    uint32_t  lapCnt_ = 0;
-    float     best_ = NAN;
+ private:
+  float rad_ = cfg::RAD_DEF_M;
+  bool inside_ = false;
+  uint32_t entry_ = 0, prev_ = 0, laps_ = 0;
+  float top_ = 0;
+  LapInfo hist_[5];
+  float best_ = NAN, avg_ = NAN;
 };
 
-/* === CSV logger =========================================================== */
 class CsvLogger {
-public:
-    bool begin() {
-        if (!SD.begin()) return false;
-        file_ = SD.open(cfg::csvPath, FILE_APPEND);
-        if (!file_) return false;
-        if (file_.size() == 0) {
-            file_.println("index,time(ms),lat,lon,alt,vKmh,sats,lapSec,bestSec");
-        }
-        nextFlush_ = millis() + cfg::flushMs;
-        return true;
+ public:
+  bool begin() {
+    if (!cfg::ENABLE_SD) return false;
+    if (!SD.begin()) return false;
+    f_ = SD.open(cfg::CSV, FILE_APPEND);
+    if (!f_) return false;
+    if (f_.size() == 0) f_.println("lap,time,top,v_kmh,yyyy/mm/dd-hh:mm:ss");
+    nxt_ = millis() + cfg::FLUSH_MS;
+    return true;
+  }
+  void add(uint32_t l, const LapInfo& i, const Snapshot& s) {
+    if (!f_) return;
+    f_.printf("%lu,%.3f,%.1f,%.1f,%04u/%02u/%02u-%02u:%02u:%02u\n", l, i.sec, i.topSpeed, s.vKmh, s.yr, s.mon, s.day, s.hr, s.min, s.sec);
+  }
+  void loop() {
+    if (f_ && millis() > nxt_) {
+      f_.flush();
+      nxt_ = millis() + cfg::FLUSH_MS;
     }
-    void log(const Snapshot& s, const LapStat& lap, float best) {
-        file_.printf("%lu,%lu,%.7f,%.7f,%.1f,%.1f,%u,",
-                     lap.index, s.epochMs, s.lat, s.lon, s.alt, s.vKmh, s.sats);
-        std::isnan(lap.seconds) ? file_.print("-") : file_.print(lap.seconds, 3);
-        file_.print(",");
-        std::isnan(best) ? file_.print("-") : file_.print(best, 3);
-        file_.println();
-        if (millis() >= nextFlush_) {
-            file_.flush();
-            nextFlush_ = millis() + cfg::flushMs;
-        }
-    }
-private:
-    File file_;
-    uint32_t nextFlush_ = 0;
+  }
+
+ private:
+  File f_;
+  uint32_t nxt_ = 0;
 };
 
-/* === Off‑screen buffered UI ============================================== */
 M5Canvas g_buf(&M5.Display);
+class Ui {
+ public:
+  void begin() {
+    M5.Display.setBrightness(255);
+    g_buf.setColorDepth(8);
+    g_buf.createSprite(320, 240);
+    g_buf.setTextSize(cfg::TXT);
+    g_buf.setTextColor(TFT_WHITE, TFT_BLACK);
+    g_buf.fillScreen(TFT_BLACK);
+    g_buf.pushSprite(0, 0);
+    ok_ = true;
+  }
+  void draw(const Snapshot& s, const LapEngine& e) {
+    auto& g = g_buf;
+    if (!ok_) {
+      M5.Display.fillScreen(TFT_BLACK);
+      return;
+    }
+    g.fillScreen(TFT_BLACK);
+    g.setCursor(0, 0);
+    g.setTextSize(1);
+    g.printf("%04u/%02u/%02u %02u:%02u:%02u  GPS:%02u\n", s.yr, s.mon, s.day, s.hr, s.min, s.sec, s.sats);
+    g.setTextSize(2);
+    g.printf("Lap %2lu  Last %.3fs\n", e.lapCount(), e.last(0).sec);
+    float diff = e.last(0).sec - e.last(1).sec;
+    g.setTextColor(diff > 0 ? TFT_RED : TFT_BLUE, TFT_BLACK);
+    g.printf("Diff %+.1fs\n", diff);
+    g.setTextColor(TFT_WHITE, TFT_BLACK);
+    g.printf("Speed %5.1f km/h  Dist %.1f m\n", s.vKmh, s.distM);
+    g.printf("Best %.3fs  Avg %.3fs\n", e.best(), e.lapCount() > 1 ? e.avg() : NAN);
+    g.setTextSize(1);
+    g.printf("R=%2.0fm BtnA:Zero BtnB:+5m BtnC:Lap\n", e.radius());
+    g.pushSprite(0, 0);
+  }
 
-class DisplayUi {
-public:
-    void begin() {
-        M5.Display.setBrightness(255);
-        g_buf.setColorDepth(8);
-        g_buf.createSprite(320, 240);
-        g_buf.setTextSize(cfg::lcdTextSize);
-        g_buf.setTextColor(TFT_WHITE, TFT_BLACK);
-        g_buf.fillScreen(TFT_BLACK);
-        g_buf.pushSprite(0, 0);
-    }
-    void draw(const Snapshot& s, const LapStat& lap, float best) {
-        bool changed = (satsPrev_ != s.sats) || (vPrev_ != s.vKmh) ||
-                       (lapPrev_ != lap.index) || (lapSecPrev_ != lap.seconds) ||
-                       (bestPrev_ != best);
-        if (!changed) return;
-        g_buf.fillScreen(TFT_BLACK);
-        g_buf.setCursor(0, 0);
-        g_buf.printf("Sat %2u  Spd %5.1f km/h\n", s.sats, s.vKmh);
-        g_buf.printf("Lap %2lu  Last %6.2f s\n", lap.index, lap.seconds);
-        g_buf.printf("Best     %6.2f s\n", best);
-        g_buf.pushSprite(0,0);
-        satsPrev_ = s.sats;
-        vPrev_ = s.vKmh;
-        lapPrev_ = lap.index;
-        lapSecPrev_ = lap.seconds;
-        bestPrev_ = best;
-    }
-private:
-    uint8_t  satsPrev_{255};
-    float    vPrev_ = NAN;
-    float    lapSecPrev_ = NAN;
-    float    bestPrev_ = NAN;
-    uint32_t lapPrev_ = UINT32_MAX;
+ private:
+  bool ok_ = false;
 };
 
-/* === Application ========================================================== */
-class LapTimerApp {
-public:
-    void setup() {
-        auto cfgM5 = M5.config();
-        cfgM5.output_power = true;
-        cfgM5.internal_spk = true;
-        M5.begin(cfgM5);
-        M5.Speaker.begin();
-        M5.Speaker.stop();
-        //M5.Speaker.end();
+GpsReader gps;
+LapEngine laps;
+CsvLogger logger;
+Ui ui;
 
-        Serial.begin(cfg::baudPc);
-        Serial2.begin(cfg::baudGps);
-        gps_.begin(Serial2);
-        ui_.begin();
+void setup() {
+  auto c = M5.config();
+  c.output_power = true;
+  c.internal_spk = true;
+  M5.begin(c);
+  M5.Speaker.begin();
+  M5.Speaker.stop();
+  Serial.begin(cfg::BAUD_PC);
+  Serial2.begin(cfg::BAUD_GPS);
+  gps.begin(Serial2);
+  ui.begin();
+  logger.begin();
+}
 
-        if constexpr (cfg::enableSdLog) {
-            okSd_ = logger_.begin();
-            if (!okSd_) uiWarn("SD not found - logging OFF");
-        }
-    }
-    void loop() {
-        Snapshot snap;
-        gps_.update(snap);
-        LapStat lap;
-        bool crossed = detector_.onSnapshot(snap, lap);
-        ui_.draw(snap, lap, detector_.bestSec());
-        if (crossed && okSd_) logger_.log(snap, lap, detector_.bestSec());
-        M5.update();
-    }
-private:
-    void uiWarn(const char* msg) {
-        auto& d = M5.Display;
-        g_buf.fillRect(0, 0, d.width(), 18, TFT_YELLOW);
-        g_buf.setTextColor(TFT_BLACK, TFT_YELLOW);
-        g_buf.setTextSize(1);
-        g_buf.setCursor(2, 4);
-        g_buf.print(msg);
-        g_buf.pushSprite(0,0);
-        g_buf.setTextColor(TFT_WHITE, TFT_BLACK);
-        g_buf.setTextSize(cfg::lcdTextSize);
-    }
-    GpsReader   gps_;
-    LapDetector detector_{cfg::originLat, cfg::originLon, cfg::radiusM};
-    CsvLogger   logger_;
-    DisplayUi   ui_;
-    bool        okSd_ = false;
-};
-
-/* === Arduino entry points ================================================ */
-LapTimerApp app;
-void setup() { app.setup(); }
-void loop()  { app.loop(); }
+void loop() {
+  Snapshot s;
+  gps.update(s);
+  M5.update();
+  if (M5.BtnA.wasPressed()) { gps.setOrigin(s.lat, s.lon); }
+  if (M5.BtnB.wasPressed()) {
+    float r = laps.radius();
+    r = r >= 50 ? 5 : r + 5;
+    laps.setRadius(r);
+  }
+  bool manual = M5.BtnC.isPressed();
+  LapInfo li;
+  bool cross = laps.update(s, li) || (manual && laps.lapCount() > 0);
+  if (cross) logger.add(laps.lapCount(), li, s);
+  ui.draw(s, laps);
+  logger.loop();
+}
