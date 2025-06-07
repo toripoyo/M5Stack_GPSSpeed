@@ -187,11 +187,21 @@ void setup() {
   delay(2000);
   M5.update();
 
+  // GPS init ------------------------------------------------------
+  if (M5.getBoard() == m5::board_t::board_M5Stack) {
+    gpsUart.begin(115200, SERIAL_8N1, 16, 17);  // M5Core用
+  } else if (M5.getBoard() == m5::board_t::board_M5StackCore2) {
+    gpsUart.begin(115200, SERIAL_8N1, 13, 14);  // M5Core2用
+  }
+
   if (M5.BtnA.isPressed()) {
-    gpsUart.begin(9600);
+    if (M5.getBoard() == m5::board_t::board_M5Stack) {
+      gpsUart.begin(9600, SERIAL_8N1, 16, 17);  // M5Core用
+    } else if (M5.getBoard() == m5::board_t::board_M5StackCore2) {
+      gpsUart.begin(9600, SERIAL_8N1, 13, 14);  // M5Core2用
+    }
     serialThrough(9600);  // never returns
   } else if (M5.BtnC.isPressed()) {
-    gpsUart.begin(115200);
     serialThrough(115200);  // never returns
   }
 
@@ -200,7 +210,6 @@ void setup() {
 
   // Runtime init ------------------------------------------------------
   nmeaBuf.reserve(cfg::kFlushThresh * 2);
-  gpsUart.begin(115200);
 
   // Tasks -------------------------------------------------------------
   xTaskCreatePinnedToCore(taskGPS, "GPS", cfg::kStackSz, nullptr, 15, nullptr, 1);
