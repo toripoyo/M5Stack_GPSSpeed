@@ -1,211 +1,224 @@
-#include <M5Stack.h>
+// GPS Speed & Altimeter (compact single‑file version)
+// ----------------------------------------------------
+//  M5Unified + TinyGPS++
+//  FreeRTOS tasks: GPS / LCD / SD
+//  Auto‑brightness, splash, baud‑select, NMEA logging
+// ----------------------------------------------------
+
+#include <M5Unified.h>
+#include <SD.h>
 #include <TinyGPS++.h>
 
-TinyGPSPlus tGPS;
-HardwareSerial hSerial(2);
-bool enableAutoSleep = true;
+#include "image.c"  // 320×240 RGB565 splash image
 
-void serialThroughMode();
-void updateScreen(TinyGPSPlus);
-void updateDirection(int);
+// ----------------------------------------------------
+// Compile‑time constants
+// ----------------------------------------------------
+namespace cfg {
+constexpr int8_t kUtcOffsetHours = 9;    // JST
+constexpr uint32_t kFlushThresh = 2500;  // NMEA flush threshold (chars)
+constexpr uint16_t kGpsPeriodMs = 10;
+constexpr uint16_t kLcdPeriodMs = 500;
+constexpr uint16_t kSdPeriodMs = 2000;
+constexpr uint8_t kBrightDay = 200;
+constexpr uint8_t kBrightNight = 60;
+constexpr uint16_t kStackSz = 4096;  // FreeRTOS task stack
+}  // namespace cfg
 
-void setup()
-{
-  M5.begin();
-  M5.Lcd.setTextSize(2);
-  M5.Lcd.drawString("Select Baud To Connect PC", 0, 90);
-  M5.Lcd.drawString("9600", 30, 200);
-  M5.Lcd.drawString("Battery", 110, 200);
-  M5.Lcd.drawString("115200", 220, 200);
-  M5.Lcd.setTextFont(4);
+// ----------------------------------------------------
+// Globals (kept minimal)
+// ----------------------------------------------------
+TinyGPSPlus gps;
+HardwareSerial& gpsUart = Serial2;  // UART2 GPIO16/17
+String nmeaBuf;
+SemaphoreHandle_t nmeaMtx = xSemaphoreCreateMutex();
+File sdFp;
+M5Canvas canvas(&M5.Display);
+
+// ----------------------------------------------------
+// Utility helpers
+// ----------------------------------------------------
+void fadeBrightness(uint8_t from, uint8_t to, int stepDelay = 10) {
+  if (from == to) return;
+  const int8_t dir = (from < to) ? 1 : -1;
+  for (uint8_t b = from; b != to; b = static_cast<uint8_t>(b + dir)) {
+    M5.Display.setBrightness(b);
+    delay(stepDelay);
+  }
+  M5.Display.setBrightness(to);
+}
+
+bool isNight() {
+  const int hour = (gps.time.hour() + cfg::kUtcOffsetHours) % 24;
+  return (hour <= 6 || hour >= 18);
+}
+
+String makeFilename() {
+  int hourLocal = gps.time.hour() + cfg::kUtcOffsetHours;
+  const uint8_t carry = hourLocal / 24;
+  hourLocal %= 24;
+  const uint8_t day = gps.date.day() + carry;
+  char buf[32];
+  snprintf(buf, sizeof(buf), "/%04u%02u%02u_%02u%02u%02u.nmea",
+           gps.date.year(), gps.date.month(), day,
+           hourLocal, gps.time.minute(), gps.time.second());
+  return String(buf);
+}
+
+// ----------------------------------------------------
+// FreeRTOS tasks
+// ----------------------------------------------------
+void taskGPS(void*) {
+  for (;;) {
+    while (gpsUart.available()) {
+      const char c = gpsUart.read();
+      gps.encode(c);
+      if (xSemaphoreTake(nmeaMtx, 0)) {
+        nmeaBuf += c;
+        xSemaphoreGive(nmeaMtx);
+      }
+    }
+    vTaskDelay(pdMS_TO_TICKS(cfg::kGpsPeriodMs));
+  }
+}
+
+void taskLCD(void*) {
+  static const char* kDirs[] = { "N ", "NE", "E ", "SE", "S ", "SW", "W ", "NW" };
+  static const uint16_t kDirCol[] = { TFT_RED, TFT_ORANGE, TFT_YELLOW, TFT_GREENYELLOW,
+                                      TFT_GREEN, TFT_CYAN, TFT_DARKCYAN, TFT_PURPLE };
+  for (;;) {
+    const int sats = gps.satellites.value();
+    const int alt = static_cast<int>(gps.altitude.meters());
+    const int spd = static_cast<int>(gps.speed.kmph() + 0.5f);
+    const int head = static_cast<int>(gps.course.deg());
+
+    canvas.fillSprite(TFT_BLACK);
+    canvas.setTextSize(2);
+
+    if (sats >= 3) {
+      canvas.drawString(String(alt) + " m", 0, 0);
+      canvas.drawNumber(spd, 0, 50, 8);
+      const uint8_t idx = ((head + 22) % 360) / 45;  // 0‑7 bucket
+      canvas.setTextColor(kDirCol[idx]);
+      canvas.drawString(kDirs[idx], 240, 0);
+    } else {
+      canvas.drawString("-----", 0, 50, 8);
+    }
+
+    canvas.setTextSize(1);
+    canvas.setTextColor(TFT_LIGHTGREY);
+    canvas.drawString("sats:" + String(sats), 0, 210);
+    canvas.setTextColor(TFT_WHITE);
+    canvas.drawString("km/h", 250, 210);
+
+    M5.Display.setBrightness(isNight() ? cfg::kBrightNight : cfg::kBrightDay);
+    canvas.pushSprite(0, 0);
+
+    vTaskDelay(pdMS_TO_TICKS(cfg::kLcdPeriodMs));
+  }
+}
+
+void taskSD(void*) {
+  for (;;) {
+    if (gps.satellites.value() >= 0) {  // fix acquired
+      if (!sdFp) sdFp = SD.open(makeFilename(), FILE_APPEND);
+
+      if (sdFp && nmeaBuf.length() > cfg::kFlushThresh) {
+        if (xSemaphoreTake(nmeaMtx, pdMS_TO_TICKS(100))) {
+          sdFp.print(nmeaBuf);
+          sdFp.flush();
+          nmeaBuf.clear();
+          xSemaphoreGive(nmeaMtx);
+        }
+      }
+    }
+    vTaskDelay(pdMS_TO_TICKS(cfg::kSdPeriodMs));
+  }
+}
+
+// ----------------------------------------------------
+// Serial‑through (blocking) – transparent UART bridge
+// ----------------------------------------------------
+void serialThrough(uint32_t baudGps) {
+  canvas.fillSprite(TFT_BLACK);
+  canvas.setTextColor(TFT_RED);
+  canvas.drawString("Serial Through Mode", 0, 0);
+  canvas.setTextColor(TFT_WHITE);
+  canvas.drawString("GPS:" + String(baudGps) + " bps", 0, 60);
+  canvas.drawString("USB:115200 bps", 0, 90);
+  canvas.pushSprite(0, 0);
+
   Serial.begin(115200);
-  pinMode(BUTTON_A_PIN, INPUT_PULLUP);
-  pinMode(BUTTON_B_PIN, INPUT_PULLUP);
-  pinMode(BUTTON_C_PIN, INPUT_PULLUP);
+  for (;;) {
+    while (gpsUart.available()) Serial.write(gpsUart.read());
+    while (Serial.available()) gpsUart.write(Serial.read());
+  }
+}
 
-  // Speaker Noise Reduce
-  M5.Speaker.mute();
-  pinMode(25, OUTPUT);
-  digitalWrite(25, LOW);
+// ----------------------------------------------------
+// Setup & Loop – Arduino entry points
+// ----------------------------------------------------
+void setup() {
+  // M5 init -----------------------------------------------------------
+  auto sys = M5.config();
+  sys.output_power = true;
+  sys.internal_spk = true;
+  M5.begin(sys);
+  M5.Speaker.begin();
+  M5.Speaker.stop();
 
-  M5.Power.begin();
-  M5.Power.setPowerVin(false);
+  // Splash -----------------------------------------------------------
+  M5.Display.pushImage(0, 0, 320, 240, image_data_Image);
+  fadeBrightness(0, 200);
+
+  // Canvas -----------------------------------------------------------
+  canvas.setColorDepth(8);
+  canvas.createSprite(320, 240);
+  canvas.setTextFont(4);
+
+  // Mode select ------------------------------------------------------
+  canvas.fillSprite(TFT_BLACK);
+  canvas.drawString("> Serial Through Mode", 0, 0);
+  canvas.drawString("> Select baud (GPS)", 0, 30);
+  canvas.drawString("BtnA:  9600", 0, 60);
+  canvas.drawString("BtnC: 115200", 0, 90);
+  canvas.pushSprite(0, 0);
+  fadeBrightness(200, 255);
   delay(2000);
-
-  // Serial Through Mode (To Setup Module)
   M5.update();
-  if (M5.BtnA.isPressed())
-  {
-    hSerial.begin(9600);
-    serialThroughMode();
-  }
-  if (M5.BtnB.isPressed())
-  {
-    enableAutoSleep = false;
-  }
-  if (M5.BtnC.isPressed())
-  {
-    hSerial.begin(115200);
-    serialThroughMode();
+
+  // GPS init ------------------------------------------------------
+  if (M5.getBoard() == m5::board_t::board_M5Stack) {
+    gpsUart.begin(115200, SERIAL_8N1, 16, 17);  // M5Core用
+  } else if (M5.getBoard() == m5::board_t::board_M5StackCore2) {
+    gpsUart.begin(115200, SERIAL_8N1, 13, 14);  // M5Core2用
   }
 
-  // You need configure Baud of the GPS module before use
-  hSerial.begin(115200);
-  delay(1000);
-  M5.Lcd.fillScreen(TFT_BLACK);
-  //M5.Lcd.setRotation(5);
+  if (M5.BtnA.isPressed()) {
+    if (M5.getBoard() == m5::board_t::board_M5Stack) {
+      gpsUart.begin(9600, SERIAL_8N1, 16, 17);  // M5Core用
+    } else if (M5.getBoard() == m5::board_t::board_M5StackCore2) {
+      gpsUart.begin(9600, SERIAL_8N1, 13, 14);  // M5Core2用
+    }
+    serialThrough(9600);  // never returns
+  } else if (M5.BtnC.isPressed()) {
+    serialThrough(115200);  // never returns
+  }
+
+  fadeBrightness(255, 0, 5);
+  M5.Display.fillScreen(TFT_BLACK);
+
+  // Runtime init ------------------------------------------------------
+  nmeaBuf.reserve(cfg::kFlushThresh * 2);
+
+  // Tasks -------------------------------------------------------------
+  xTaskCreatePinnedToCore(taskGPS, "GPS", cfg::kStackSz, nullptr, 15, nullptr, 1);
+  xTaskCreatePinnedToCore(taskLCD, "LCD", cfg::kStackSz, nullptr, 10, nullptr, 1);
+  if (SD.begin(GPIO_NUM_4)) {
+    xTaskCreatePinnedToCore(taskSD, "SD", cfg::kStackSz, nullptr, 5, nullptr, 1);
+  }
 }
 
-void loop()
-{
-  // Manage Power
-  if (enableAutoSleep)
-  {
-    while (!M5.Power.isCharging())
-    {
-      M5.Power.lightSleep(SLEEP_SEC(3));
-    }
-  }
-
-  // Receive GPS Data
-  while (hSerial.available() > 0)
-  {
-    tGPS.encode(hSerial.read());
-  }
-
-  // Change Night Mode to Adjust Brightness
-  bool isNight = tGPS.time.hour() + 9 >= 18 || tGPS.time.hour() + 9 <= 6;
-  if (isNight)
-  {
-    M5.Lcd.setBrightness(60);
-  }
-  else
-  {
-    M5.Lcd.setBrightness(200);
-  }
-
-  // Draw Information
-  updateScreen(&tGPS);
-}
-
-// Update Screen Info
-unsigned int oldAlt = 0;
-unsigned int oldSpeed = 0;
-unsigned int oldHeading = 0;
-void updateScreen(TinyGPSPlus *gps)
-{
-  int nowAlt = (int)(gps->altitude.meters());
-  int nowSats = gps->satellites.value();
-  int nowSpeed = (int)(gps->speed.kmph() - 0.5);
-  int nowHeading = (int)(gps->course.deg());
-
-  M5.Lcd.setTextColor(TFT_WHITE);
-  if (nowSats >= 3)
-  {
-    if (nowAlt != oldAlt)
-    {
-      M5.Lcd.setTextSize(2);
-      M5.Lcd.fillRect(0, 0, 230, 47, TFT_BLACK);
-      M5.Lcd.drawString(String(nowAlt) + "m    ", 0, 0);
-    }
-    if (nowSpeed != oldSpeed)
-    {
-      M5.Lcd.setTextSize(3);
-      M5.Lcd.fillRect(15, 60, 300, 150, TFT_BLACK);
-      M5.Lcd.drawString(String(nowSpeed), 15, 60, 7);
-    }
-    if (nowHeading != oldHeading)
-    {
-      updateDirection(nowHeading);
-    }
-  }
-  else
-  {
-    M5.Lcd.setTextSize(3);
-    M5.Lcd.fillRect(10, 60, 300, 150, TFT_BLACK);
-    M5.Lcd.drawString("------", 10, 60, 7);
-    delay(1000);
-  }
-  M5.Lcd.setTextSize(1);
-  M5.Lcd.drawString("km/h", 260, 210);
-
-  oldAlt = nowAlt;
-  oldSpeed = nowSpeed;
-  oldHeading = nowHeading;
-}
-
-// Update Direction Info
-void updateDirection(int nowCourse)
-{
-  const int width = (int)(45.0 / 2.0 + 1.0);
-  String dispStr;
-  uint16_t strColor;
-
-  if (nowCourse > 360 || nowCourse < 0)
-  {
-    dispStr = "-- ";
-  }
-  else if (nowCourse >= 360 - width || nowCourse <= 0 + width)
-  {
-    dispStr = "N  ";
-    strColor = TFT_RED;
-  }
-  else if (45 - width <= nowCourse && nowCourse <= 45 + width)
-  {
-    dispStr = "NE ";
-    strColor = TFT_ORANGE;
-  }
-  else if (90 - width <= nowCourse && nowCourse <= 90 + width)
-  {
-    dispStr = "E  ";
-    strColor = TFT_YELLOW;
-  }
-  else if (135 - width <= nowCourse && nowCourse <= 135 + width)
-  {
-    dispStr = "SE ";
-    strColor = TFT_GREENYELLOW;
-  }
-  else if (180 - width <= nowCourse && nowCourse <= 180 + width)
-  {
-    dispStr = "S  ";
-    strColor = TFT_GREEN;
-  }
-  else if (225 - width <= nowCourse && nowCourse <= 225 + width)
-  {
-    dispStr = "SW ";
-    strColor = TFT_CYAN;
-  }
-  else if (270 - width <= nowCourse && nowCourse <= 270 + width)
-  {
-    dispStr = "W  ";
-    strColor = TFT_DARKCYAN;
-  }
-  else if (315 - width <= nowCourse && nowCourse <= 315 + width)
-  {
-    dispStr = "NW ";
-    strColor = TFT_PURPLE;
-  }
-
-  M5.Lcd.setTextSize(2);
-  M5.Lcd.setTextColor(strColor);
-  M5.Lcd.fillRect(230, 0, 90, 47, TFT_BLACK);
-  M5.Lcd.drawString(dispStr, 240, 0);
-}
-
-// -----------------------------------------------------------
-// Serial Through Mode to Configure GPS Module from PC
-void serialThroughMode()
-{
-  M5.Lcd.drawString("Serial Through Mode", 0, 120);
-  while (1)
-  {
-    while (hSerial.available() > 0)
-    {
-      Serial.write(hSerial.read());
-    }
-    while (Serial.available() > 0)
-    {
-      hSerial.write(Serial.read());
-    }
-  }
+void loop() {
+  vTaskDelay(pdMS_TO_TICKS(10'000));
 }
