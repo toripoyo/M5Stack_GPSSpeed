@@ -1,9 +1,9 @@
 GPS Speed Meter for Car  
 M5Stack-Core and Core2 both avairable
 
-* Display GPS speed, altitude, heading  
+* Display GPS speed, altitude, heading
 * Automatic dimmer while 18:00 - 6:00 JST
-* Logging NMEA data to SD card (temporary avairable only M5Stack-Core2)
+* Logging NMEA data to SD card
 
 ![](image/Sample.jpg)
 
